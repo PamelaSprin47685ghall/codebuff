@@ -31,6 +31,10 @@ import {
   createChatGptBackendFetch,
   extractChatGptAccountId,
 } from './chatgpt-backend-fetch'
+import {
+  findModelInByokConfig,
+} from '../byok/config'
+import { createByokModel } from '../byok/model-provider'
 
 import type { LanguageModel } from 'ai'
 
@@ -116,6 +120,18 @@ type OpenRouterUsageAccounting = {
  */
 export async function getModelForRequest(params: ModelRequestParams): Promise<ModelResult> {
   const { apiKey, model, skipChatGptOAuth, costMode } = params
+
+  // Check if BYOK config has this model first (user-configured endpoints take priority)
+  const byokResult = findModelInByokConfig(model)
+  if (byokResult) {
+    const byokModel = createByokModel(byokResult)
+    if (byokModel) {
+      return {
+        model: byokModel,
+        isChatGptOAuth: false,
+      }
+    }
+  }
 
   // Check if we should use ChatGPT OAuth direct
   // Only attempt for allowlisted models; non-allowlisted models silently fall through to backend.

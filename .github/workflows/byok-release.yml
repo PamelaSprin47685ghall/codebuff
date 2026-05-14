@@ -1,0 +1,138 @@
+name: BYOK Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Override version suffix (default: read from cli/release/package.json + "-byok")'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-project
+
+      - name: Install root dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build SDK
+        run: bun run --cwd sdk build
+
+      - name: Prebuild agents
+        run: bun run --cwd cli scripts/prebuild-agents.ts
+
+      - name: Configure build environment
+        shell: bash
+        run: |
+          echo "CODEBUFF_GITHUB_ACTIONS=true" >> $GITHUB_ENV
+          echo "NEXT_PUBLIC_CB_ENVIRONMENT=prod" >> $GITHUB_ENV
+          echo "NEXT_PUBLIC_CODEBUFF_APP_URL=https://codebuff.com" >> $GITHUB_ENV
+          echo "NEXT_PUBLIC_SUPPORT_EMAIL=support@codebuff.com" >> $GITHUB_ENV
+          echo "NEXT_PUBLIC_POSTHOG_API_KEY=phc_dummy" >> $GITHUB_ENV
+          echo "NEXT_PUBLIC_POSTHOG_HOST_URL=https://us.i.posthog.com" >> $GITHUB_ENV
+          echo "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_dummy" >> $GITHUB_ENV
+          echo "NEXT_PUBLIC_STRIPE_CUSTOMER_PORTAL=https://billing.stripe.com/p/login/test" >> $GITHUB_ENV
+          echo "NEXT_PUBLIC_WEB_PORT=3000" >> $GITHUB_ENV
+
+      - name: Derive BYOK version
+        id: version
+        shell: bash
+        run: |
+          OFFICIAL_VERSION="$(node -p "require('./cli/release/package.json').version")"
+          BYOK_VERSION="${OFFICIAL_VERSION}-byok"
+          echo "Official version: ${OFFICIAL_VERSION}"
+          echo "BYOK version:     ${BYOK_VERSION}"
+          echo "byok_version=${BYOK_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "official_version=${OFFICIAL_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build native binary
+        run: bun run scripts/build-binary.ts codebuff ${{ steps.version.outputs.byok_version }}
+        working-directory: cli
+        shell: bash
+        env:
+          VERBOSE: true
+
+      - name: Smoke test binary
+        shell: bash
+        run: |
+          cd cli/bin
+          ./codebuff --version
+          bun ../scripts/smoke-binary.ts ./codebuff
+
+      - name: Prepare release package
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.byok_version }}"
+          cd cli/release
+          cp ../bin/codebuff ./codebuff
+          chmod 755 ./codebuff
+          node -e "
+          const pkg = JSON.parse(require('fs').readFileSync('package.json', 'utf8'));
+          pkg.name = 'codebuff-byok';
+          pkg.version = '$VERSION';
+          pkg.description = 'Codebuff BYOK fork - bring your own OpenAI-compatible API endpoint';
+          pkg.bin = { 'codebuff': 'codebuff' };
+          pkg.files = ['codebuff'];
+          pkg.repository = {
+            type: 'git',
+            url: 'https://github.com/PamelaSprin47685ghall/codebuff.git'
+          };
+          pkg.homepage = 'https://github.com/PamelaSprin47685ghall/codebuff';
+          delete pkg.scripts;
+          delete pkg.dependencies;
+          delete pkg.os;
+          delete pkg.cpu;
+          delete pkg.engines;
+          delete pkg.publishConfig;
+          require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          echo "=== Updated package.json ==="
+          cat package.json
+
+      - name: Pack .tgz
+        shell: bash
+        run: |
+          cd cli/release
+          npm pack
+          echo "=== Packed file ==="
+          ls -lh *.tgz
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.byok_version }}"
+          TAG="byok-v${VERSION}"
+          REPO="${{ github.repository }}"
+
+          # Write release notes to a temp file (using printf to avoid heredoc tab-vs-space issues)
+          printf '%s\n' \
+            "BYOK (Bring Your Own Key) fork v${VERSION}" '' \
+            '## Installation' '' \
+            '```bash' \
+            "bun install -g https://github.com/${REPO}/releases/download/${TAG}/codebuff-byok-${VERSION}.tgz" \
+            '```' '' \
+            "Configure your custom model endpoint in \`~/.omp/agent/models.yml\`." \
+            > /tmp/release-notes.md
+
+          # Delete tag+release if it already exists (re-run scenario)
+          gh release delete "$TAG" --repo "$REPO" --yes 2>/dev/null || true
+          git tag -d "$TAG" 2>/dev/null || true
+          git push origin --delete "refs/tags/$TAG" 2>/dev/null || true
+
+          # Create release with notes from file
+          gh release create "$TAG" \
+            --title "BYOK Fork v${VERSION}" \
+            --notes-file /tmp/release-notes.md \
+            --repo "$REPO" \
+            cli/release/codebuff-byok-${VERSION}.tgz

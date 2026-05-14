@@ -98,3 +98,17 @@ export {
 export {
   resetChatGptOAuthRateLimit,
 } from './impl/model-provider'
+
+// BYOK (Bring Your Own Key) — custom model provider via ~/.omp/agent/models.yml
+export {
+  loadByokConfig,
+  findModelInByokConfig,
+  isByokConfigAvailable,
+} from './byok/config'
+export { createByokModel } from './byok/model-provider'
+export type {
+  ByokConfig,
+  ByokModelDefinition,
+  ByokProviderDefinition,
+  ResolvedByokModel,
+} from './byok/config'

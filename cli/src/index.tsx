@@ -32,6 +32,7 @@ import { initializeApp } from './init/init-app'
 import { getProjectRoot, setProjectRoot } from './project-files'
 import { trackEvent } from './utils/analytics'
 import { getAuthToken, getAuthTokenDetails } from './utils/auth'
+import { isByokConfigAvailable } from '@codebuff/sdk'
 import { resetCodebuffClient } from './utils/codebuff-client'
 import { setApiClientAuthToken } from './utils/codebuff-api'
 import { IS_FREEBUFF } from './utils/constants'
@@ -370,17 +371,27 @@ async function main(): Promise<void> {
       React.useState(showProjectPicker)
 
     React.useEffect(() => {
-      const apiKey = getAuthTokenDetails().token ?? ''
+      const { token } = getAuthTokenDetails()
 
-      if (!apiKey) {
+      // BYOK mode: if ~/.omp/agent/models.yml is configured, no Codebuff
+      // API key is needed — all model requests go through user-specified
+      // endpoints. Skip the codebuff login entirely.
+      if (!token && isByokConfigAvailable()) {
+        setRequireAuth(false)
+        setHasInvalidCredentials(false)
+        return
+      }
+
+      if (!token) {
         setRequireAuth(true)
         setHasInvalidCredentials(false)
         return
       }
 
+      // Has a token — it might be invalid
       setHasInvalidCredentials(true)
       setRequireAuth(false)
-    }, [])
+    }, []);
 
     const loadFileTree = React.useCallback(async (root: string) => {
       try {
